@@ -1,0 +1,164 @@
+#include <ros/ros.h>
+#include <sensor_msgs/PointCloud2.h>
+// PCL specific includes
+#include <pcl/ros/conversions.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+#include <pcl/filters/extract_indices.h>
+#include <pcl/filters/passthrough.h>
+#include <pcl/features/normal_3d.h>
+#include <pcl/sample_consensus/method_types.h>
+#include <pcl/sample_consensus/model_types.h>
+#include <pcl/segmentation/sac_segmentation.h>
+#include <boost/shared_ptr.hpp>
+#include <pcl/common/eigen.h>
+//#include <pcl/segmentation/grabcut.h>
+
+
+ros::Publisher pub;
+
+  
+    //pcl::PCDWriter writer;
+ 
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_cylinder (new pcl::PointCloud<pcl::PointXYZ> ());
+  boost::shared_ptr<sensor_msgs::PointCloud2> cloud_cylinder_2 (new sensor_msgs::PointCloud2);
+ 
+  boost::shared_ptr<pcl::search::KdTree<pcl::PointXYZ> > tree (new pcl::search::KdTree<pcl::PointXYZ> ()); // declaración del objeto tree,  <pcl::search::KdTree<pcl::PointXYZ> es una clase contenedora que hereda la clase pcl::KdTree para presentar funciones de búsqueda usando la estructura KdTree. Esta estructura es un tipo generico de  localizador espacial 3D usando estructuras KdTree. Esta clase esta hecha para usar el proyecto FLANN (Fast Library for Approximate Nearest Neighbor). La clase pertenece al módulo search, esta librería proporciona métodos para búsqueda del vecino más cercano (nearest neighboor--> búsqueda de proximidad) usando diferentes estructuras de datos (kd-tree, octree, etc). 
+
+  // Datasets
+  //pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
+
+  boost::shared_ptr<sensor_msgs::PointCloud2> cloud_filtered  (new sensor_msgs::PointCloud2); // El formato sensor_msgs permite recibir mensajes de ROS.
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_filtered_1 (new pcl::PointCloud<pcl::PointXYZ>);// pcl::PointCloud<T> formato interno de PCL. 
+
+  
+  boost::shared_ptr<pcl::PointCloud<pcl::Normal> > cloud_normals (new pcl::PointCloud<pcl::Normal>);// pcl::Normal es una clase que pertenece al modulo common, una estructura de puntos representan coordenadas normales y la estimación de superficies de curvatura. 
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_filtered2 (new pcl::PointCloud<pcl::PointXYZ>);
+  boost::shared_ptr<pcl::PointCloud<pcl::Normal> > cloud_normals2 (new pcl::PointCloud<pcl::Normal>);
+  
+  boost::shared_ptr<pcl::ModelCoefficients> coefficients_plane (new pcl::ModelCoefficients);
+  boost::shared_ptr<pcl::ModelCoefficients> coefficients_cylinder (new pcl::ModelCoefficients);
+  //pcl::ModelCoefficients::Ptr coefficients_plane (new pcl::ModelCoefficients), coefficients_cylinder (new pcl::ModelCoefficients);
+  
+  boost::shared_ptr<pcl::PointIndices> inliers_plane (new pcl::PointIndices);
+  boost::shared_ptr<pcl::PointIndices> inliers_cylinder (new pcl::PointIndices);
+  
+  //pcl::PointIndices::Ptr inliers_plane (new pcl::PointIndices), inliers_cylinder (new pcl::PointIndices);
+
+void 
+cloud_cb (const sensor_msgs::PointCloud2ConstPtr& input)
+{
+ 
+      
+  // Build a passthrough filter to remove spurious NaNs (NaNs falsos)
+  boost::shared_ptr<pcl::PassThrough<sensor_msgs::PointCloud2> > pass (new pcl::PassThrough<sensor_msgs::PointCloud2>);
+  pass->setInputCloud (input);// Almacena la imagen que llega del kinect
+  pass->setFilterFieldName ("z");// Provee el nombre del campo para ser usados por los datos filtrados, en conjunto con setFilterLimits() los puntos que tienen valores fuera de ese intervalo para este campo son descartados. 
+  pass->setFilterLimits (0, 1.5);//Conjunto de limites númericos para el campo para los datos filtrados.
+  pass->filter (*cloud_filtered);// Guarda los datos filtrados en *cloud_filtered (el formato de dicha variable es sensor_msgs::PointCloud2
+  //std::cerr << "PointCloud after filtering has: " << cloud_filtered->points.size () << " data points." << std::endl;
+  // PassTrough es un filtro, pasa puntos en una nube basados en  las restricciones de un point Type de un campo en particular. Itera a través de toda la entrada sólo una vez automaticamente, filtra puntos no-finitos y los puntos fuera del intervalo especificado por setFilterLimits(), lo cual se aplica sólo en el campo especificado por setFilterFieldName(). 
+   
+  pcl::fromROSMsg (*cloud_filtered, *cloud_filtered_1); //Convierte de formato sensor_msgs::PointCloud2 a pcl::PointCloud<T>, T representa el tipo de plantilla.
+
+  // Estimate point normals
+  boost::shared_ptr<pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> > ne (new pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal>); // Se declara el objeto ne con tipo de clase Normal Estimation la cuál pertenece al módulo Features. La clase class pcl::NormalEstimation< PointInT, PointOutT > estima las propiedades locales de una superficie (superficies locales y curvaturas) de cada punto en 3D. PointOutT se especifica como pcl::Normal, la normal es almacenada en los primeros 3 componentes (0-2) y la curvatura es almacenada en el componente 3. 
+  ne->setSearchMethod (tree); // Seleccionar método kdtree*
+  ne->setInputCloud (cloud_filtered_1); // Proporciona un puntero para el conjunto de datos de entrada( cloud_filtered_1 cuyo  formato es de este tipo -->pcl::PointCloud<T>)
+  ne->setKSearch (50); // Almacena el número de K nearest neighbors (vecinos más cercanos) para la feature estimation (estimación característica) 
+  ne->compute (*cloud_normals);// método basado en feature estimation para todos los puntos dados en <setInputCloud (), setIndices ()> usando la superficie obtenida de setSearchSurface () y el localizador espacial en setSearchMethod (). Su único parametro es "output", que es el conjunto de datos del modelo resultante de la nube de puntos que contiene la características estimadas. 
+
+  // Create the segmentation object for the planar model and set all the parameters
+ boost::shared_ptr<pcl::SACSegmentationFromNormals<pcl::PointXYZ, pcl::Normal> > seg (new pcl::SACSegmentationFromNormals<pcl::PointXYZ, pcl::Normal>);// La clase pcl::SACSegmentationFromNormals<pcl::PointXYZ, pcl::Normal>  representa la clase de segmentacion de nodos de PCL,para metodos y modelos de Sample Consensus que requieres el uso de superficies normales para la estimacion.
+  seg->setOptimizeCoefficients (true);// Se declara true si se requiere un refinamiento de los coeficientes. En la función : setOptimizeCoefficients (bool optimize) optimize se sustituye por true para habilitar el refinamiento del modelo de coeficientes, false en caso contrario.
+  seg->setModelType (pcl::SACMODEL_NORMAL_PLANE); //El tipo de modelo a usar (el parametro es dado por el usuario), para checar los tipos de modelo ir a model_types.h <--> http://docs.pointclouds.org/1.5.1/model__types_8h.html
+  seg->setNormalDistanceWeight (0.1); // Set the normal angular distance weight. Parameter: w	the relative weight (between 0 and 1) to give to the angular distance (0 to pi/2) between point normals and the plane normal. (The Euclidean distance will have weight 1-w.). La clase en la que se encuentra esta función es pcl::SampleConsensusModelFromNormals
+  seg->setMethodType (pcl::SAC_RANSAC);// Es un atributo heredado de pcl::SACSegmentation<PointT>, ahi se especifica el tipo de método de Sample Consensus a utilizar. 
+  seg->setMaxIterations (100);//Atributo protegido heredado de pcl::SACSegmentation<PointT>, máximo número de iteraciones antes de parar.
+  seg->setDistanceThreshold (0.03); // Es la distancia umbral al modelo.Esta función pertenece a la clase pcl::SACSegmentation< PointT >.
+  seg->setInputCloud (cloud_filtered_1);// funcion de miembro publico heredado de pcl::PCLBase<PointT>, provee un puntero para el dataset de entrada. Paremetro: cloud --> constante boost shared pointer a mensaje PointCloud.
+  seg->setInputNormals (cloud_normals);// Es una public member function, provee un puntero al dataset de entrada que contiene los puntos normales del dataset XYZ. Parametro: indices --> un puntero a indices que representan el dato de entrada.http://docs.pointclouds.org/trunk/a01163.html#a1952d7101f3942bac3b69ed55c1ca7ea
+  //Obtain the plane inliers and coefficients 
+  seg->segment (*inliers_plane, *coefficients_plane);// public member function heredada de pcl::SACSegmentation <PointT>. Metodo base para la segmentación de un modelo en una PointCloud dada por <setInputCloud (), setIndices ()>. Tiene dos parametros: uno de entrada (inliers) --> los indices de los puntos resultantes que contiene el modelo encontrado, y uno de salida: model_coefficients --> el resultante del modelo de coeficientes. 
+  std::cerr << "Plane coefficients: " << *coefficients_plane << std::endl;// imprimir el resultado del modelo de coeficientes en pantalla.
+
+  //Extract the planar inliers from the input cloud
+  boost::shared_ptr<pcl::ExtractIndices<pcl::PointXYZ> > extract  (new pcl::ExtractIndices<pcl::PointXYZ>); // Se declara un objeto para la clase <pcl::ExtractIndices<pcl::PointXYZ>, perteneciente al modulo filters.
+  extract->setInputCloud (cloud_filtered_1);// http://docs.pointclouds.org/1.7.0/classpcl_1_1_extract_indices_3_01pcl_1_1_p_c_l_point_cloud2_01_4.html, funcion de miembro publico heredado de pcl::PCLBase<PointT>, provee un puntero para el dataset de entrada. Parametro: cloud --> constante boost shared pointer a mensaje PointCloud.
+  extract->setIndices (inliers_plane);// provee un puntero al vector de los indices que representan el input data.                   Parametro de entrada -->indices.
+  extract->setNegative (false);// con esta funcion elegimos si todos los indices han de ser regresados o si son regresados todos los puntos excepto los indices.True= todos_los_puntos_excepto_los_indices, false= indices.
+  // Write the planar inliers to disk
+  boost::shared_ptr<pcl::PointCloud<pcl::PointXYZ> > cloud_plane (new pcl::PointCloud<pcl::PointXYZ> ());//pcl::PointCloud representa la clase base en PCL para almacenar colecciones de puntos 3D.Esta clase tiene un formato, lo que quiere decir que se necesita especificar el tipo de dato que debe tener. pcl::PointXYZ. http://docs.pointclouds.org/trunk/a01211.html#details
+  extract->filter (*cloud_plane);//La función pertenece a la clase fase de filters y es una public member function. Llama al metodo de filtrado y regresa el dataset filtrado en la salida (parametro output).
+  std::cerr << "PointCloud representing the planar component: " << cloud_plane->points.size () << " data points." << std::endl;//size es una función que se inlcuye en la clase pcl::PointCloud< T > --> http://docs.pointclouds.org/trunk/a01211.html
+  //writer.write ("table_scene_mug_stereo_textured_plane.pcd", *cloud_plane, false);
+
+  //extract the rest
+  extract->setNegative (true);// con esta funcion elegimos si todos los indices han de ser regresados o si son regresados todos los puntos excepto los indices.True= todos_los_puntos_excepto_los_indices, false= indices.
+  extract->filter (*cloud_filtered2);
+  boost::shared_ptr<pcl::ExtractIndices<pcl::Normal> > extract_normals (new pcl::ExtractIndices<pcl::Normal>); //Se declara un objeto en la clase pcl::ExtractIndices, la cual permite extraer indices de una PointCloud como una PointCloud separada. pcl::Normal es una esctrura de puntos que representa la estimación normal de coordenadas y curvatura de superficie.
+  extract_normals->setNegative (true);
+  extract_normals->setInputCloud (cloud_normals);
+  extract_normals->setIndices (inliers_plane);
+  extract_normals->filter (*cloud_normals2);
+
+  //5 Create the segmentation object for cylinder segmentation and set all the parameters
+  seg->setOptimizeCoefficients (true);// public member function heredada de pcl::SACSegmentation <PointT>, Poner true si un refinamiento de coeficiente es requerido.
+  seg->setModelType (pcl::SACMODEL_CYLINDER);
+  seg->setMethodType (pcl::SAC_RANSAC);
+  seg->setNormalDistanceWeight (0.1);
+  seg->setMaxIterations (10000);
+  seg->setDistanceThreshold (0.05);
+  seg->setRadiusLimits (0, 0.1);
+  seg->setInputCloud (cloud_filtered2);
+  seg->setInputNormals (cloud_normals2);
+
+ //5 Se usa un estimador robusto (RANSAC) para obtener los coeficientes cilindricos se impuso una distancia umbral de cada punto inlier al modelo, no mayor a 5 cm. Además, se ajusta la influencia de los normales de la superficie a un peso de 0.1, y se limito el radio del modelo cilindrico para ser menor de 10 cm. 
+
+  // Obtain the cylinder inliers and coefficients
+  seg->segment (*inliers_cylinder, *coefficients_cylinder);
+  //std::cerr << "Cylinder coefficients: " << *coefficients_cylinder << std::endl;
+
+  // Write the cylinder inliers to disk
+  extract->setInputCloud (cloud_filtered2);
+  extract->setIndices (inliers_cylinder);
+  extract->setNegative (false);
+  
+  extract->filter (*cloud_cylinder);
+
+  if (cloud_cylinder->points.empty ()) 
+    std::cerr << "Can't find the cylindrical component." << std::endl;
+  else
+  {
+	  std::cerr << "PointCloud representing the cylindrical component: " << cloud_cylinder->points.size () << " data points." << std::endl;
+	 // writer.write ("table_scene_mug_stereo_textured_cylinder.pcd", *cloud_cylinder, false);
+  }
+
+  
+  // Publish the data
+  pcl::toROSMsg (*cloud_cylinder, *cloud_cylinder_2);
+  pub.publish (cloud_cylinder_2);
+
+}
+
+int
+main (int argc, char** argv)
+{
+  // Initialize ROS
+  ros::init (argc, argv, "pr_cyl");
+  ros::NodeHandle nh;
+
+  // Create a ROS subscriber for the input point cloud
+  ros::Subscriber sub = nh.subscribe ("input", 1, cloud_cb);
+
+  // Create a ROS publisher for the output point cloud
+  pub = nh.advertise<sensor_msgs::PointCloud2> ("pr_cyl", 1);
+
+  // Spin
+  ros::spin ();
+ 
+  return (0);
+}
